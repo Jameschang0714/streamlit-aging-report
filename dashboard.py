@@ -247,7 +247,7 @@ def create_deterioration_heatmap(df_deterioration, metric_name):
     return fig
 
 if df is not None:
-    st.title("📊 租賃案件帳齡追蹤報表")
+    st.title("📊 租車案件帳齡追蹤報表")
     st.markdown("使用側邊欄的篩選器來查看不同案件或合約日期的帳齡變化趨勢。")
 
     # 初始化可能未定義的變數
