@@ -412,7 +412,7 @@ if df is not None:
         )
         selected_delay_categories_deterioration = delay_metric_options_deterioration[selected_delay_metric_name_deterioration]
 
-        chart_type_options = ["盒鬚圖", "熱力圖"]
+        chart_type_options = ["熱力圖"]
         chart_type = st.sidebar.selectbox(
             "選擇圖表類型:",
             chart_type_options,
