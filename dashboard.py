@@ -25,7 +25,10 @@ def load_data():
             # 移除無法轉換的日期行
             df.dropna(subset=['合約日期'], inplace=True)
         if '月份' in df.columns:
-            df['月份'] = df['月份'].astype(str)
+            # 嘗試將月份轉換為日期時間物件，如果格式不符則設為 NaT
+            df['月份'] = pd.to_datetime(df['月份'], format='%Y/%m', errors='coerce')
+            # 移除無法轉換的月份行
+            df.dropna(subset=['月份'], inplace=True)
         if '案件編號' in df.columns:
             df['案件編號'] = df['案件編號'].astype(str)
 
@@ -148,6 +151,37 @@ def create_stacked_bar_chart(filtered_df, title_text, other_charts_order, stacke
     fig.update_layout(barmode='stack') # 堆疊模式
     return fig
 
+def prepare_monthly_deterioration_data(df, selected_delay_categories, metric_name):
+    # 計算每個月份的 selected_delay_categories 逾期案件數和總案件數
+    df_copy = df.copy()
+    df_copy['月份'] = pd.to_datetime(df_copy['月份']) # 確保月份是 datetime 類型
+
+    # 計算每個月份的總案件數
+    total_cases_per_month = df_copy.groupby('月份')['案件編號'].nunique().reset_index(name='總案件數')
+
+    # 計算每個月份的 selected_delay_categories 逾期案件數
+    delayed_cases_per_month = df_copy[df_copy['帳齡'].isin(selected_delay_categories)].groupby('月份')['案件編號'].nunique().reset_index(name=f'{metric_name}_逾期案件數')
+
+    # 合併數據
+    monthly_summary = pd.merge(total_cases_per_month, delayed_cases_per_month, on='月份', how='left').fillna(0)
+
+    # 計算 selected_delay_categories 逾期比例
+    monthly_summary[f'{metric_name}_逾期比例'] = (monthly_summary[f'{metric_name}_逾期案件數'] / monthly_summary['總案件數']) * 100
+    monthly_summary.replace([np.inf, -np.inf], np.nan, inplace=True) # 處理除以零的無限值
+    monthly_summary.dropna(subset=[f'{metric_name}_逾期比例'], inplace=True) # 移除 NaN 值
+
+    # 按照月份排序
+    monthly_summary = monthly_summary.sort_values(by='月份')
+
+    # 計算月對月變化 (惡化指標)
+    monthly_summary[f'月對月_{metric_name}_逾期比例變化'] = monthly_summary[f'{metric_name}_逾期比例'].diff()
+
+    # 提取年份和月份數字
+    monthly_summary['年份'] = monthly_summary['月份'].dt.year
+    monthly_summary['月份數字'] = monthly_summary['月份'].dt.month
+
+    return monthly_summary
+
 def create_cohort_line_chart(filtered_df, title_text, selected_delay_metric_name):
     fig = px.line(
         filtered_df, 
@@ -166,8 +200,54 @@ def create_cohort_line_chart(filtered_df, title_text, selected_delay_metric_name
     )
     return fig
 
+def create_deterioration_boxplot(df_deterioration, metric_name):
+    fig = px.box(
+        df_deterioration,
+        x='月份數字',
+        y=f'月對月_{metric_name}_逾期比例變化',
+        title=f'各月份資產品質惡化程度分佈 (月對月 {metric_name} 逾期比例變化)',
+        labels={'月份數字': '月份', f'月對月_{metric_name}_逾期比例變化': f'{metric_name} 逾期比例變化 (%)'},
+        points="all" # 顯示所有數據點
+    )
+    fig.update_layout(
+        xaxis = dict(
+            tickmode = 'array',
+            tickvals = list(range(1, 13)),
+            ticktext = [str(i) for i in range(1, 13)]
+        )
+    )
+    return fig
+
+def create_deterioration_heatmap(df_deterioration, metric_name):
+    # 創建熱力圖所需的 pivot table
+    pivot_df = df_deterioration.pivot_table(
+        index='年份',
+        columns='月份數字',
+        values=f'月對月_{metric_name}_逾期比例變化'
+    )
+    
+    # 確保月份順序正確
+    pivot_df = pivot_df.reindex(columns=list(range(1, 13)))
+
+    fig = go.Figure(data=go.Heatmap(
+        z=pivot_df.values,
+        x=pivot_df.columns,
+        y=pivot_df.index.astype(str), # 將年份轉換為字串，避免浮點數顯示
+        colorscale='RdYlGn_r', # 紅黃綠反轉色階，紅色代表惡化，綠色代表改善
+        colorbar_title_text=f'{metric_name} 逾期比例變化 (%)',
+        text=pivot_df.round(2).values, # 顯示數值
+        texttemplate="%{text:.2f}",
+        textfont={"size":10}
+    ))
+    fig.update_layout(
+        title_text=f'各年份各月份資產品質惡化程度熱力圖 (月對月 {metric_name} 逾期比例變化)',
+        xaxis_title='月份',
+        yaxis_title='年份'
+    )
+    return fig
+
 if df is not None:
-    st.title("📊 租賃案件帳齡追蹤報表")
+    st.title("📊 租車案件帳齡追蹤報表")
     st.markdown("使用側邊欄的篩選器來查看不同案件或合約日期的帳齡變化趨勢。")
 
     # 初始化可能未定義的變數
@@ -181,7 +261,7 @@ if df is not None:
 
     filter_type = st.sidebar.radio(
         "請選擇篩選方式：",
-        ('依合約日期範圍篩選', '依案件編號篩選', '依合約月份群組比較'),
+        ('依合約日期範圍篩選', '依案件編號篩選', '依合約月份群組比較', '資產品質月變動分析'),
         help="選擇您想用來過濾資料的維度。"
     )
 
@@ -317,6 +397,32 @@ if df is not None:
             title_text = "請選擇合約月份"
         chart_type = "同期群折線圖"
 
+    elif '資產品質月變動分析' in filter_type:
+        st.sidebar.markdown("此分析將顯示各月份資產品質的月對月變化趨勢。")
+        
+        delay_metric_options_deterioration = {
+            "M1+": ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M6+'],
+            "M2+": ['M2', 'M3', 'M4', 'M5', 'M6', 'M6+'],
+            "M4+": ['M4', 'M5', 'M6', 'M6+']
+        }
+        selected_delay_metric_name_deterioration = st.sidebar.selectbox(
+            '選擇延滯指標',
+            list(delay_metric_options_deterioration.keys()),
+            help="選擇要追蹤的延滯指標（例如：M1+、M2+、M4+）。"
+        )
+        selected_delay_categories_deterioration = delay_metric_options_deterioration[selected_delay_metric_name_deterioration]
+
+        chart_type_options = ["盒鬚圖", "熱力圖"]
+        chart_type = st.sidebar.selectbox(
+            "選擇圖表類型:",
+            chart_type_options,
+            index=0,
+            help="盒鬚圖適合觀察各月份的整體分佈，熱力圖適合觀察跨年份的月份趨勢。"
+        )
+        # 準備數據
+        filtered_df = prepare_monthly_deterioration_data(df.copy(), selected_delay_categories_deterioration, selected_delay_metric_name_deterioration)
+        title_text = "資產品質月變動分析"
+
 
     # --- 主畫面圖表 ---
     # --- 關鍵指標 (KPIs) ---
@@ -326,6 +432,11 @@ if df is not None:
             total_cases = filtered_df['總案件數'].sum()
             overdue_cases = filtered_df['延滯案件數'].sum()
             overdue_percentage = (overdue_cases / total_cases * 100) if total_cases > 0 else 0
+        elif filter_type == '資產品質月變動分析':
+            # 在資產品質月變動分析模式下，KPIs 不適用，或者需要重新定義
+            total_cases = "N/A"
+            overdue_cases = "N/A"
+            overdue_percentage = "N/A"
         else:
             total_cases = filtered_df['案件編號'].nunique()
             overdue_aging_categories = ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M6+']
@@ -339,19 +450,23 @@ if df is not None:
         with col2:
             st.metric(label="逾期案件數 (M1+)", value=overdue_cases)
         with col3:
-            st.metric(label="逾期案件佔比", value=f"{overdue_percentage:.2f}%")
+            st.metric(label="逾期案件佔比", value=f"{overdue_percentage:.2f}%" if isinstance(overdue_percentage, float) else overdue_percentage)
     else:
         st.info("請選擇篩選條件以顯示關鍵指標。")
 
     if not filtered_df.empty:
-        filtered_df = filtered_df.sort_values(by='月份')
+        # 只有在非資產品質月變動分析模式下才需要排序月份
+        if filter_type != '資產品質月變動分析':
+            filtered_df = filtered_df.sort_values(by='月份')
 
         # 【核心修正】定義兩套Y軸順序，以應對不同圖表的邏輯
         # 視覺順序：從下到上
         visual_order_base = ['Normal', 'M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6+']
+        other_charts_order = []
+        heatmap_order = []
         
-        # 只有在非同期群比較模式下才定義帳齡相關的順序
-        if chart_type != "同期群折線圖":
+        # 只有在 filtered_df 包含 '帳齡' 欄位時才定義帳齡相關的順序
+        if '帳齡' in filtered_df.columns:
             # 1. 給 px 圖表使用的順序 (px會將列表第一項放在最頂部)
             other_charts_order = [cat for cat in visual_order_base if cat in filtered_df['帳齡'].cat.categories][::-1]
             
@@ -378,10 +493,19 @@ if df is not None:
             fig = create_scatter_chart(filtered_df, title_text, other_charts_order)
         elif chart_type == "折線圖":
             fig = create_line_chart(filtered_df, title_text, filter_type, other_charts_order)
+        
+        elif chart_type == "盒鬚圖" and '資產品質月變動分析' in filter_type:
+            fig = create_deterioration_boxplot(filtered_df, selected_delay_metric_name_deterioration)
+        elif chart_type == "熱力圖" and '資產品質月變動分析' in filter_type:
+            fig = create_deterioration_heatmap(filtered_df, selected_delay_metric_name_deterioration)
 
         fig.update_layout(
-            xaxis_title="<b>檢視月份</b>",
-            yaxis_title="<b>案件數量</b>" if chart_type == "堆疊長條圖" else ("<b>" + selected_delay_metric_name + "</b>" if chart_type == "同期群折線圖" else "<b>帳齡分類</b>"),
+            xaxis_title="<b>檢視月份</b>" if filter_type != '資產品質月變動分析' else "<b>月份</b>",
+            yaxis_title="<b>案件數量</b>" if chart_type == "堆疊長條圖" else (
+                "<b>" + selected_delay_metric_name + "</b>" if chart_type == "同期群折線圖" else (
+                    "<b>" + selected_delay_metric_name_deterioration + " 逾期比例變化 (%)</b>" if filter_type == '資產品質月變動分析' else "<b>帳齡分類</b>"
+                )
+            ),
             title_font_size=20,
             hovermode="x unified"
         )
@@ -391,6 +515,8 @@ if df is not None:
         with st.expander("查看篩選後的原始資料"):
             if chart_type == "同期群折線圖":
                 st.dataframe(filtered_df.sort_values(by=['合約月份', '月份']))
+            elif filter_type == '資產品質月變動分析':
+                st.dataframe(filtered_df.sort_values(by=['年份', '月份數字']))
             else:
                 st.dataframe(filtered_df.sort_values(by=['月份', '帳齡']))
             csv = filtered_df.to_csv(index=False).encode('utf-8')
