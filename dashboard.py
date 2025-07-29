@@ -245,6 +245,23 @@ def create_deterioration_heatmap(df_deterioration, metric_name):
         yaxis_title='年份',
         yaxis_tickformat=".0f"
     )
+    # 動態調整 Y 軸刻度，避免邊界年份顯示
+    years = pivot_df.index.tolist()
+    if len(years) > 2:
+        # 顯示中間的年份，隱藏第一個和最後一個
+        middle_years = years[1:-1]
+        fig.update_yaxes(
+            tickmode='array',
+            tickvals=middle_years,
+            ticktext=[str(int(y)) for y in middle_years]
+        )
+    else:
+        # 如果只有一個或兩個年份，則全部顯示
+        fig.update_yaxes(
+            tickmode='array',
+            tickvals=years,
+            ticktext=[str(int(y)) for y in years]
+        )
     return fig
 
 if df is not None:
