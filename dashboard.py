@@ -242,7 +242,8 @@ def create_deterioration_heatmap(df_deterioration, metric_name):
     fig.update_layout(
         title_text=f'各年份各月份資產品質惡化程度熱力圖 (月對月 {metric_name} 逾期比例變化)',
         xaxis_title='月份',
-        yaxis_title='年份'
+        yaxis_title='年份',
+        yaxis_tickformat=".0f"
     )
     return fig
 
